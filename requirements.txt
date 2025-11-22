@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+python-multipart
+boto3
+pinecone>=4.0
+openai
+psycopg2-binary
+sqlalchemy
+pydantic>=2.0
+python-jose[cryptography]
+tqdm
+pydantic-settings>=2.0
+PyMuPDF==1.24.10
+bcrypt
+python-dotenv
+email-validator
+pydantic[email]
