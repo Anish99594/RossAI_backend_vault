@@ -1,5 +1,5 @@
 import httpx
-from .config import settings
+from app.config import settings
 
 API_URL = "https://api.openai.com/v1/embeddings"
 HEADERS = {

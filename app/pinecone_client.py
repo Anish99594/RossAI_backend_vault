@@ -1,5 +1,5 @@
 from pinecone import Pinecone
-from .config import settings
+from app.config import settings
 import time
 import traceback
 

@@ -3,152 +3,134 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta
 from jose import jwt
-from sqlalchemy import text
-import bcrypt   # <-- Only this is needed
+import bcrypt
 
-from .config import settings
-from .db import SessionLocal
+from app.config import settings
+from .db import get_db
 
 router = APIRouter()
+db = get_db()
 
 # ---------- MODELS ----------
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str
-    user_id: str           # human-friendly username (used in memberships.user_id)
+    user_id: str
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    company_id: str
-    team_id: str
-    project_id: str
+    company_id: str | None = None
+    team_id: str | None = None
+    project_id: str | None = None
+
 
 
 # ---------- HELPERS ----------
 def hash_password(password: str) -> str:
-    """Hash the password using bcrypt"""
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify bcrypt password"""
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 # ---------- ROUTES ----------
 @router.post("/signup")
 def signup(data: SignupRequest):
-    """
-    Create a REAL user with email + password.
-    Does NOT give any role or project access.
-    Admin will later attach memberships.
-    """
-    session = SessionLocal()
-
-    # check if email or user_id already used
-    existing = session.execute(
-        text("""
-            SELECT 1 FROM users
-            WHERE email = :email OR user_id = :user_id
-        """),
-        {"email": data.email, "user_id": data.user_id}
-    ).fetchone()
+    existing = db.users.find_one({
+        "$or": [{"email": data.email}, {"user_id": data.user_id}]
+    })
 
     if existing:
-        session.close()
-        raise HTTPException(status_code=400, detail="User with this email or user_id already exists")
+        raise HTTPException(400, "User with this email or user_id already exists")
 
-    pwd_hash = hash_password(data.password)
+    # 👉 Check if OWNER already exists
+    owner_exists = db.users.find_one({"role": "owner"})
+    is_owner = False
 
-    session.execute(
-        text("""
-            INSERT INTO users (id, user_id, email, password_hash)
-            VALUES (gen_random_uuid(), :user_id, :email, :password_hash)
-        """),
-        {
+    if not owner_exists:
+        is_owner = True  # first ever user becomes OWNER
+
+    # Create user
+    db.users.insert_one({
+        "user_id": data.user_id,
+        "email": data.email,
+        "password_hash": hash_password(data.password),
+        "role": "owner" if is_owner else "user",
+    })
+
+    # 🔥 ADD THIS → create membership for OWNER
+    if is_owner:
+        db.memberships.insert_one({
             "user_id": data.user_id,
-            "email": data.email,
-            "password_hash": pwd_hash,
-        }
-    )
+            "company_id": "global",
+            "team_id": "global",
+            "project_id": "global",
+            "role": "owner"
+        })
+        return {"status": "ok", "message": "OWNER created successfully. You control everything."}
 
-    session.commit()
-    session.close()
+    return {"status": "ok", "message": "Signup successful. Ask admin for access."}
 
-    return {"status": "ok", "message": "User created. Ask an admin to give you access to a project."}
-
-
+# ---------- ROUTES ----------
 @router.post("/login")
 def login(data: LoginRequest):
-    """
-    Real login:
-    - Check email + password
-    - Ensure user has membership for the given (company, team, project)
-    - Put that role + project info inside JWT
-    """
-    session = SessionLocal()
+    user = db.users.find_one({"email": data.email})
 
-    # 1) Find user by email
-    row = session.execute(
-        text("""
-            SELECT user_id, email, password_hash
-            FROM users
-            WHERE email = :email
-        """),
-        {"email": data.email}
-    ).mappings().fetchone()
+    if not user or not verify_password(data.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid email or password")
 
-    if not row:
-        session.close()
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    # ---------------------------------------------
+    # 1) OWNER LOGIN (no scope required)
+    # ---------------------------------------------
+    owner_membership = db.memberships.find_one({
+        "user_id": user["user_id"],
+        "role": "owner"     # 👈 check only role
+    })
 
-    if not verify_password(data.password, row["password_hash"]):
-        session.close()
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    user_id = row["user_id"]
-
-    # 2) Check that this user has membership for this project
-    membership = session.execute(
-        text("""
-            SELECT role
-            FROM memberships
-            WHERE user_id   = :user_id
-              AND company_id = :company_id
-              AND team_id    = :team_id
-              AND project_id = :project_id
-        """),
-        {
-            "user_id": user_id,
-            "company_id": data.company_id,
-            "team_id": data.team_id,
-            "project_id": data.project_id,
+    if owner_membership:
+        token = jwt.encode(
+            {
+                "user_id": user["user_id"],
+                "roles": ["owner"],
+                "exp": datetime.utcnow() + timedelta(hours=12)
+            },
+            settings.JWT_SECRET,
+            algorithm=settings.JWT_ALGORITHM,
+        )
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "message": "OWNER login successful"
         }
-    ).mappings().fetchone()
+
+    # ---------------------------------------------
+    # 2) NORMAL USER (must provide scope)
+    # ---------------------------------------------
+    membership = db.memberships.find_one({
+        "user_id": user["user_id"],
+        "company_id": data.company_id,
+        "team_id": data.team_id,
+        "project_id": data.project_id
+    })
 
     if not membership:
-        session.close()
-        raise HTTPException(
-            status_code=403,
-            detail="You do not have access to this project. Contact your manager/admin."
-        )
+        raise HTTPException(403, "You do not have access to this area")
 
-    role = membership["role"]
-
-    # 3) Build JWT
     payload = {
-        "user_id": user_id,
+        "user_id": user["user_id"],
         "company_id": data.company_id,
         "team_id": data.team_id,
         "project_id": data.project_id,
-        "roles": [role],  # still a list, used everywhere else
+        "roles": [membership["role"]],
         "exp": datetime.utcnow() + timedelta(hours=12),
     }
 
     token = jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
-    session.close()
-
-    return {"access_token": token, "token_type": "bearer"}
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }

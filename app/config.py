@@ -8,12 +8,13 @@ class Settings(BaseSettings):
     PINECONE_INDEX: str
     PINECONE_DIM: int
 
-    S3_ENDPOINT: str
-    S3_ACCESS_KEY: str
-    S3_SECRET_KEY: str
-    S3_BUCKET: str
+    # S3_ENDPOINT: str
+    # S3_ACCESS_KEY: str
+    # S3_SECRET_KEY: str
+    # S3_BUCKET: str
 
-    POSTGRES_URL: str
+    MONGO_URI: str
+    MONGO_DB: str
 
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"

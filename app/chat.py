@@ -4,7 +4,7 @@ from openai import OpenAI  # <--- 1. New Import
 from .auth import get_current_user, User
 from .embeddings import embed_batch
 from .pinecone_client import query_vector
-from .config import settings
+from app.config import settings
 
 router = APIRouter()
 
