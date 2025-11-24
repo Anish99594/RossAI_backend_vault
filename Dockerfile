@@ -13,5 +13,8 @@ COPY . .
 # Environment vars FIRST
 ENV PYTHONUNBUFFERED=1
 
-# Production command – NO reload, single worker
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-use-colors"]
+# Expose port (optional but recommended)
+EXPOSE 8000
+
+# Render-compatible startup command
+CMD gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 300
