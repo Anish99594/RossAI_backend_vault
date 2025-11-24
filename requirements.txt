@@ -16,3 +16,5 @@ email-validator
 pydantic[email]
 pymongo
 httpx
+gunicorn
+
